@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import AsyncIterator, Iterator
 
 import numpy as np
@@ -30,15 +31,11 @@ def float_to_pcm16(audio: np.ndarray) -> bytes:
     return (audio * 32767.0).astype(np.int16).tobytes()
 
 
-def chunk_pcm16(audio: np.ndarray, sample_rate: int, chunk_ms: int) -> Iterator[bytes]:
-    samples_per_chunk = int(sample_rate * (chunk_ms / 1000.0))
-    samples_per_chunk = max(samples_per_chunk, sample_rate // 50)
-    total_samples = audio.shape[-1]
-    for start in range(0, total_samples, samples_per_chunk):
-        chunk = audio[start : start + samples_per_chunk]
-        if not len(chunk):
-            continue
-        yield float_to_pcm16(chunk)
+def _chunk_indices(length: int, samples_per_chunk: int) -> Iterator[tuple[int, int]]:
+    for start in range(0, length, samples_per_chunk):
+        end = min(start + samples_per_chunk, length)
+        if end > start:
+            yield start, end
 
 
 async def stream_chunks(
@@ -48,6 +45,19 @@ async def stream_chunks(
     chunk_ms: int,
 ) -> AsyncIterator[bytes]:
     mono = ensure_mono(audio)
-    resampled = resample_audio(mono, input_rate, target_rate)
-    for chunk in chunk_pcm16(resampled, target_rate, chunk_ms):
-        yield chunk
+    samples_per_chunk = int(input_rate * (chunk_ms / 1000.0))
+    samples_per_chunk = max(samples_per_chunk, input_rate // 50)
+
+    async def _resample_chunk(chunk: np.ndarray) -> bytes:
+        return await asyncio.to_thread(_process_chunk, chunk, input_rate, target_rate)
+
+    for start, end in _chunk_indices(mono.shape[-1], samples_per_chunk):
+        chunk = mono[start:end]
+        if not len(chunk):
+            continue
+        yield await _resample_chunk(chunk)
+
+
+def _process_chunk(chunk: np.ndarray, input_rate: int, target_rate: int) -> bytes:
+    resampled = resample_audio(chunk, input_rate, target_rate)
+    return float_to_pcm16(resampled)
