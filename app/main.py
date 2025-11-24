@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncIterator, Optional
 
+import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import ValidationError
@@ -15,7 +17,7 @@ from .schemas import ErrorResponse, SynthesisRequest
 from .tts_engine import ChatterboxEngine
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 app = FastAPI(title="Chatterbox TTS Service", version="0.2.0")
 _engine: Optional[ChatterboxEngine] = None
@@ -88,6 +90,15 @@ async def tts_stream(
     top_k = payload.top_k
 
     loop = asyncio.get_running_loop()
+    
+    synthesis_start = time.perf_counter()
+    logger.info(
+        "tts.synthesis.start",
+        tenant=tenant,
+        text_len=len(payload.text),
+        language_id=language_id,
+        text_preview=payload.text[:50],
+    )
 
     def _run_model():
         with track_latency():
@@ -105,12 +116,25 @@ async def tts_stream(
             )
 
     try:
+        model_start = time.perf_counter()
         audio, source_rate = await loop.run_in_executor(None, _run_model)
+        model_latency = time.perf_counter() - model_start
+        
+        logger.info(
+            "tts.synthesis.model_complete",
+            tenant=tenant,
+            model_latency_ms=round(model_latency * 1000, 2),
+            audio_samples=len(audio) if hasattr(audio, '__len__') else 0,
+        )
     except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("failed to synthesize audio")
+        logger.exception("tts.synthesis.failed", error=str(exc))
         raise HTTPException(status_code=500, detail=f"synthesis failed: {exc}") from exc
 
     async def audio_generator() -> AsyncIterator[bytes]:
+        chunk_count = 0
+        total_bytes = 0
+        first_chunk_time = None
+        
         with session_tracker(tenant):
             async for chunk in stream_chunks(
                 audio,
@@ -118,8 +142,28 @@ async def tts_stream(
                 settings.output_sample_rate,
                 chunk_ms,
             ):
+                if first_chunk_time is None:
+                    first_chunk_time = time.perf_counter()
+                    ttfc = first_chunk_time - synthesis_start
+                    logger.info(
+                        "tts.streaming.first_chunk",
+                        tenant=tenant,
+                        ttfc_ms=round(ttfc * 1000, 2),
+                    )
+                
+                chunk_count += 1
+                total_bytes += len(chunk)
                 AUDIO_BYTES.labels(tenant).inc(len(chunk))
                 yield chunk
+            
+            total_latency = time.perf_counter() - synthesis_start
+            logger.info(
+                "tts.streaming.complete",
+                tenant=tenant,
+                chunks_sent=chunk_count,
+                total_bytes=total_bytes,
+                total_latency_ms=round(total_latency * 1000, 2),
+            )
 
     headers = {
         "X-Session-Id": payload.session_id,

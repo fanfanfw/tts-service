@@ -9,11 +9,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="TTS_SERVICE_", extra="ignore")
 
-    model_id: str = "ResembleAI/chatterbox"
+    model_id: str = "ResembleAI/chatterbox"  # TODO: Will migrate to Coqui XTTS v2 in Phase 2
     model_variant: Literal["base", "multilingual"] = "base"
     device: Literal["cuda", "cpu"] = "cuda"
     output_sample_rate: int = 16000
-    chunk_duration_ms: int = 200
+    chunk_duration_ms: int = 60  # OPTIMIZED: Reduced from 120ms for faster first audio
     max_text_chars: int = 2000
     default_language_id: str = "en"
     default_cfg_scale: float = 0.5
