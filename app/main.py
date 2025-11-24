@@ -133,3 +133,13 @@ async def tts_stream(
 @app.exception_handler(ValidationError)
 async def validation_exception_handler(_: Request, exc: ValidationError):
     return JSONResponse(status_code=422, content=ErrorResponse(detail=str(exc)).model_dump())
+
+
+@app.on_event("startup")
+async def warmup_models() -> None:
+    settings = get_settings()
+    if not settings.warmup_on_start:
+        return
+    loop = asyncio.get_running_loop()
+    engine = get_engine(settings)
+    await loop.run_in_executor(None, engine.ensure_loaded)

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     auth_token: Optional[str] = None
     metrics_endpoint_enabled: bool = True
     log_level: str = "INFO"
+    warmup_on_start: bool = True
 
 
 @lru_cache
