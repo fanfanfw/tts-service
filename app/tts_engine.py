@@ -15,6 +15,23 @@ from .config import Settings
 logger = logging.getLogger(__name__)
 
 
+def _ensure_watermarker_available() -> None:
+    """
+    Chatterbox tries to instantiate perth.PerthImplicitWatermarker at import time.
+    On some platforms the compiled extension is missing and the symbol is None, which
+    causes a startup crash. Fall back to the dummy implementation so synthesis still works.
+    """
+    try:
+        import perth
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("perth package not available; watermarking disabled")
+        return
+
+    if getattr(perth, "PerthImplicitWatermarker", None) is None:
+        logger.warning("PerthImplicitWatermarker unavailable; using DummyWatermarker fallback")
+        perth.PerthImplicitWatermarker = perth.DummyWatermarker
+
+
 class ChatterboxEngine:
     """Wrapper around ResembleAI Chatterbox models."""
 
@@ -32,6 +49,7 @@ class ChatterboxEngine:
             logger.info("Loading Chatterbox model (%s, %s)", self.settings.model_id, self.settings.model_variant)
             model_cls = ChatterboxMultilingualTTS if self.settings.model_variant == "multilingual" else ChatterboxTTS
             device = torch.device(self.settings.device)
+            _ensure_watermarker_available()
             model = model_cls.from_pretrained(device=device)
             self._model = model
             logger.info("Chatterbox model ready")
